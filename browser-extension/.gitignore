@@ -1,0 +1,5 @@
+/*.log
+/target
+/*-init.clj
+/chrome-ext/js/
+out

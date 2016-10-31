@@ -1,0 +1,13 @@
+{
+  "name": "Stream Of Redditness",
+  "version": "1.0",
+  "manifest_version": 2,
+  "description": "Streams Reddit comment threads",
+  "permissions": ["tabs", "*://*.reddit.com/r/StreamReddit/*"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.reddit.com/r/StreamReddit/*"],
+      "js": ["js/compiled/ext.js"]
+    }
+  ]
+}
