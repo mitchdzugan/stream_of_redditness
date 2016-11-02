@@ -25,6 +25,13 @@
     (.setAttribute fref "href" href)
     (.appendChild (.item (.getElementsByTagName js/document "head") 0) fref)))
 
+#_(defn add-js
+  [href]
+  (let [fref (.createElement js/document "script")]
+    (.setAttribute fref "type" "text/javascript")
+    (.setAttribute fref "src" href)
+    (.appendChild (.item (.getElementsByTagName js/document "head") 0) fref)))
+
 (clear-head)
 (add-stylesheet "https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.3.5/css/bootstrap.css")
 (add-stylesheet "https://res.cloudinary.com/mitchdzugan/raw/upload/v1477459061/re-com_rrfpmh.css")

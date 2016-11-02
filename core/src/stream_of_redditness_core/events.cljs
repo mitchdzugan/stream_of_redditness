@@ -1,17 +1,17 @@
 (ns stream-of-redditness-core.events
   (:require-macros [cljs.core.async.macros :refer [go go-loop]])
-  (:require [re-frame.core :as re-frame]
-            [stream-of-redditness-core.db :as db]
-            [stream-of-redditness-core.util :as util]
-            [day8.re-frame.http-fx]
-            [posh.reagent :as posh]
-            [datascript.core :as d]
-            [ajax.core :as ajax]
-            [clojure.data :as data]
-            [re-frame.loggers :refer [console]]
+  (:require [ajax.core :as ajax]
             [cljs.core.async :refer [put! chan <! >! timeout close!]]
             [cljs.core.match :refer-macros [match]]
-            [dat-harmony.core :as dat-harmony]))
+            [clojure.data :as data]
+            [dat-harmony.core :as dat-harmony]
+            [datascript.core :as d]
+            [day8.re-frame.http-fx]
+            [posh.reagent :as posh]
+            [re-frame.core :as re-frame]
+            [re-frame.loggers :refer [console]]
+            [stream-of-redditness-core.db :as db]
+            [stream-of-redditness-core.util :as util]))
 
 (re-frame/reg-cofx
  :datascript
@@ -34,8 +34,13 @@
    (let [app (.getElementById js/document "app")])
    (assoc coeffects :heights {:display-height (.-innerHeight js/window)
                               :rendered-height (-> js/document
-                                                        (.getElementById "app")
-                                                        .-clientHeight)
+                                                   (.getElementById "el-comment-root")
+                                                   (#(if %
+                                                        (.-clientHeight %)
+                                                        0)))
+                              :page-height (-> js/document
+                                               (.getElementById "app")
+                                               .-clientHeight)
                               :scroll-top (-> js/document
                                               (.getElementsByTagName "body")
                                               (.item 0)
@@ -167,66 +172,150 @@
                           [:storage-update (-> %
                                                .-newValue
                                                cljs.reader/read-string)])))))
-
 (defn take-while-+1
+  ([pred coll]
+   (lazy-seq
+    (when-let [s (seq coll)]
+      (if (pred (first s))
+        (cons (first s) (take-while-+1 pred (rest s)))
+        (cons (first s) (seq [])))))))
+
+(defn drop-while--1
   [p l]
-  (match [l]
-         [([] :seq)] '()
-         [([(x :guard p) & xs] :seq)] (conj (take-while-+1 p xs) x)
-         [([x & xs] :seq)] (list x)))
+  (->> l
+       reverse
+       (take-while-+1 #(not (p %)))
+       reverse))
 
-(defn comment-char-count
-  [{:keys [comment/loaded comment/body comment/children]}]
-  (if loaded
-    (reduce #(+ %1 (comment-char-count %2)) (count body) children)
-    0))
+(defn if-using
+  ([c tf f] (if-let [r c] (tf r) c))
+  ([c tf] (if-let [r c] (tf r))))
 
-(defn comment-char-count-tl
-  [db id]
-  (let [
-        {:keys [comment/loaded comment/body comment/children]}
-        (d/pull db '[*] id)
-        ]
-    (if loaded
-      (reduce #(+ %1 (comment-char-count %2)) (count body) children)
-      0)))
+(defn last-that-satisfies
+  [p l]
+  (loop [[x1 & [x2 & _ :as xs]] l]
+    (cond
+      (and (p x1) (nil? xs)) x1
+      (and (p x1) ((complement p) x2)) x1
+      ((complement p) x1) nil
+      :else (recur xs))))
+
+(defn get-extreme-id
+  [chars-per-pixel target-amount-off-screen get-furthest-off-screen rendered-comments all-comments]
+  (let [first-rendered-id (-> rendered-comments first :db/id)
+        target-delta-size (* (- target-amount-off-screen
+                                (-> first-rendered-id get-furthest-off-screen))
+                             chars-per-pixel)]
+    (if (> target-delta-size 0)
+      (->> all-comments
+           (drop-while #(not= first-rendered-id (:db/id %)))
+           reverse
+           (reduce (fn [{:keys [target-id size-acc]} {:keys [db/id comment/size]}]
+                        (let [curr-size (+ size-acc size)]
+                          {:target-id (if (and (not target-id)
+                                               (> curr-size target-delta-size))
+                                        id
+                                        target-id)
+                           :size-acc curr-size}))
+                   {:size-acc 0})
+           :target-id
+           (#(or % (-> all-comments first :db/id))))
+      (:db/id (or
+               (last-that-satisfies #(> (get-furthest-off-screen (:db/id %)) target-amount-off-screen) (drop 3 rendered-comments))
+               (first rendered-comments))))))
+
 
 (re-frame/reg-fx
  :calculate-for-render
  (fn [{:keys [display-height rendered-height scroll-top db]}]
-   (let [{{:keys [render/last-char-count render/last-id]} :root/render
+   (let [{{:keys [render/last-char-count render/last-id] last-rendered :render/comments} :root/render
           {:keys [polling/threads]} :root/polling}
-         (d/pull db [{:root/render [:render/last-char-count :render/last-id]}
-                     {:root/polling [{:polling/threads [{:thread/top-level-comments [:db/id :comment/created]}]}]}] 0)
+         (d/pull db [{:root/render [:render/last-char-count :render/last-id :render/comments]}
+                     {:root/polling [{:polling/threads [{:thread/top-level-comments [:db/id :comment/created :comment/loaded :comment/size]}]}]}] 0)
          all-comments (->> threads
                            (mapcat :thread/top-level-comments)
+                           (filter :comment/loaded)
                            (sort-by #(* -1 (:comment/created %))))]
      (re-frame/dispatch
       [:commit-for-render
        (if (> last-char-count 0)
-         (let [target-char-count (-> display-height
-                                     (* 5)
-                                     (+ scroll-top)
-                                     (* (/ last-char-count rendered-height)))
-               {:keys [char-count id]} (reduce (fn [{:keys [char-count seen-last] :as acc}
-                                                         {:keys [db/id]}]
-                                                 {:seen-last (or seen-last (not last-id) (= last-id id))
-                                                  :char-count (if (< char-count target-char-count)
-                                                                (+ char-count (comment-char-count-tl db id))
-                                                                char-count)
-                                                  :id (if (and seen-last
-                                                               (>= char-count target-char-count))
-                                                        (:id acc)
-                                                        id)})
-                                               {:char-count 0}
-                                               all-comments)]
+         (let [chars-per-pixel (/ last-char-count rendered-height)
+               skippable-char-count (->> display-height
+                                         (* 5)
+                                         (- scroll-top)
+                                         (max 0)
+                                         (* chars-per-pixel))
+               skip-size (* display-height -5)
+               first-id (get-extreme-id chars-per-pixel
+                                        skip-size
+                                        #(if-using (.getElementById js/document (str %))
+                                                   (fn [el] (-> el .getBoundingClientRect .-top)))
+                                        last-rendered
+                                        all-comments)
+               last-id (get-extreme-id chars-per-pixel
+                                       skip-size
+                                       #(if-using (.getElementById js/document (str %))
+                                                  (fn [el] (-> el .getBoundingClientRect .-bottom)))
+                                       (reverse last-rendered)
+                                       (reverse all-comments))
+               {:keys [last-skippable-id top-last]} (reduce (fn [{:keys [done] :as acc} {:keys [db/id]}]
+                                                              (if-not done
+                                                                (let [top (if-using (.getElementById js/document (str id))
+                                                                                    #(-> % .getBoundingClientRect .-bottom))]
+                                                                  (if top
+                                                                    (let [done (> top skip-size)]
+                                                                      (println {:top top :skip-size skip-size})
+                                                                      (if done
+                                                                        (merge acc {:done true})
+                                                                        (merge acc {:last-skippable-id id
+                                                                                    :top-last top})))
+                                                                    acc))
+                                                                acc))
+                                                            {}
+                                                            last-rendered)
+               top-empty-space (if top-last
+                                 (- top-last (->> "el-comments-container"
+                                                  (.getElementById js/document)
+                                                  .getBoundingClientRect
+                                                  .-top))
+                                 0)
+               target-char-count (->> display-height
+                                      (* 5)
+                                      (+ scroll-top)
+                                      (* chars-per-pixel))
+               {:keys [id
+                       char-count comments]} (reduce (fn [{:keys [char-count seen-last comments seen-last-skippable] :as acc}
+                                                          {:keys [db/id comment/size] :as comment}]
+                                                       {:seen-last (or seen-last (not last-id) (= last-id id))
+                                                        :seen-last-skippable (or seen-last-skippable (= last-skippable-id id))
+                                                        :char-count (if (and (< char-count target-char-count)
+                                                                             seen-last-skippable)
+                                                                      (+ char-count size)
+                                                                      char-count)
+                                                        :id (if (and seen-last
+                                                                     (>= char-count target-char-count))
+                                                              (:id acc)
+                                                              id)
+                                                        :comments (if (and (or (not seen-last)
+                                                                               (< char-count target-char-count))
+                                                                           seen-last-skippable)
+                                                                    (cons comment comments)
+                                                                    comments)})
+                                                     {:char-count 0
+                                                      :skipped-char-count 0
+                                                      :comments (lazy-seq nil)
+                                                      :seen-last-skippable (not last-skippable-id)}
+                                                     all-comments)]
+           (println [(count comments) top-empty-space])
            {:char-count char-count
-            :comments (->> all-comments
-                           (take-while-+1 #(not= (:db/id %) id)))
-            :last-id id})
-         (let [comments (take 20 all-comments)]
+            :comments (reverse comments)
+            :last-id id
+            :top-empty-space top-empty-space}) ;;(int (/ skipped-char-count chars-per-pixel))})
+         (let [comments (->> all-comments (take 20))]
            {:comments comments
-            :char-count (reduce #(+ %1 (comment-char-count-tl db (:db/id %2))) 0 comments)}))]))))
+            :char-count (reduce #(+ %1 (:comment/size %2)) 0 comments)
+            :top-empty-space 0}))]))))
+
 
 (re-frame/reg-cofx
   :ws
@@ -313,7 +402,8 @@
                                            :sort "new"}
                          :on-success      [:more-reddit-poll-res (:thread/id thread-to-poll)]
                          :headers         {:authorization (str "bearer " token)
-                                           :content-type "application/json; charset=UTF-8"}})]
+                                           :content-type "application/json; charset=UTF-8"}
+                         })]
          {:dispatch [:poll-request api-call]
           :datascript-transact {:transactions [{:path [0 :root/polling]
                                                 :datoms [{:polling/is-polling? true
@@ -342,12 +432,12 @@
  :on-scroll
  [{:root/render [:render/scroll-requested-in-progress?]}]
  (fn [{{{:keys [render/scroll-requested-in-progress?]} :root/render} :datascript
-       {:keys [display-height scroll-top rendered-height]} :heights}]
+       {:keys [display-height scroll-top page-height]} :heights}]
    (let [scroll-percentage (-> scroll-top
                                (+ display-height)
                                (+ scroll-top)
                                (/ 2)
-                               (/ rendered-height))]
+                               (/ page-height))]
      (cond
        (and (> scroll-percentage 0.66) (not scroll-requested-in-progress?))
        {:dispatch [:prepare-select-for-render]
@@ -408,11 +498,12 @@
 
 (reg-event-fx
  :commit-for-render
- (fn [_ [_ {:keys [comments char-count last-id]}]]
+ (fn [_ [_ {:keys [comments char-count last-id top-empty-space]}]]
    {:datascript-transact {:transactions [{:path [0 :root/render]
                                           :datoms [{:render/scroll-requested-in-progress? false
                                                     :render/last-char-count char-count
                                                     :render/comments comments
+                                                    :render/top-empty-space top-empty-space
                                                     :render/last-id (or last-id false)}]}]}}))
 
 (reg-event-fx
@@ -426,20 +517,93 @@
 
 (defn process-comments
   [mores thread-id res root-path]
-  (let [all-data (reduce util/comment-to-datoms [] (get-in res root-path))
+  (let [c (chan)
+        all-data (reduce (partial util/comment-to-datoms c)
+                         []
+                         (get-in res root-path))
         pred #(= :more (:kind %))
         [new-mores datoms] [(filter pred all-data) (remove pred all-data)]]
-    {:dispatch-n [[:poll-reddit :loop]
-                  [:prepare-select-for-render]]
-     :datascript-transact
+    (go (>! c false))
+    (go-loop [comments []]
+      (if-let [comment (<! c)]
+        (recur (conj comments comment))
+        (go-loop [[[comment-group & comment-groups] transactions tl-comment-sizes-before] [(partition-all 20 comments) [] {}]]
+          (if comment-group
+            (let [results (d/q '[:find ?hash
+                                 :in $ [?hash ...]
+                                 :where [_ :markdown/hash ?hash]]
+                               @db/conn
+                               (map (fn [[id _ h]] (str h id)) comment-group))
+                  original-sizes (->> comment-group
+                                      (map (fn [[id _ _]] id))
+                                      (d/q '[:find ?eid ?size
+                                             :in $ [?cid ...]
+                                             :where
+                                             [?bid :markdown/size ?size]
+                                             [?eid :comment/body ?bid]
+                                             [?eid :comment/id ?cid]]
+                                           @db/conn)
+                                      (into {}))
+                  reverse-comment-tree (->> comment-group
+                                            (map (fn [[id _ h]] id))
+                                            (d/q '[:find (pull ?eid [:comment/size
+                                                                     :comment/id
+                                                                     {:comment/_children ...}])
+                                                   :in $ [?cid ...]
+                                                   :where [?eid :comment/id ?cid]]
+                                                 @db/conn)
+                                            flatten)
+                  tl-comment-lookup (->> reverse-comment-tree
+                                         (map #(loop [{:keys [comment/id comment/_children comment/body]} %]
+                                                 (if _children
+                                                   (recur _children)
+                                                   {(:comment/id %) id})))
+                                         (reduce merge {}))
+                  new-comments (->> comment-group
+                                    (remove (fn [[id _ h]] (contains? results [(str h id)]))))
+                  new-parsed (->> new-comments
+                                  (map (fn [[id body h]]
+                                         (let [parsed (js->clj (.parse (.-markdown js/window) body))]
+                                           {:comment/id id
+                                            :markdown/parsed parsed
+                                            :markdown/size (count (str parsed))
+                                            :markdown/hash (str h id)}))))
+                  tl-comment-sizes (reduce (fn [tl-c-s {:keys [comment/id markdown/size]}]
+                                             (let [delta (- size (or (get original-sizes id) 0))
+                                                   tl-c (get tl-comment-lookup id)]
+                                               (merge tl-c-s
+                                                      {tl-c (+ (or (get tl-c-s tl-c) 0) delta)})))
+                                           (merge
+                                            (->> reverse-comment-tree
+                                                 (map #(loop [{:keys [comment/id comment/_children comment/size]} %]
+                                                         (if _children
+                                                           (recur _children)
+                                                           {id size})))
+                                                 (reduce merge {}))
+                                            tl-comment-sizes-before)
+                                           new-parsed)
+                  updated-transactions (concat transactions [{:datoms (map #(-> %
+                                                                                (assoc :db/id (db/tempid))
+                                                                                (dissoc :comment/id))
+                                                                           new-parsed)}
+                                                             {:datoms (->> comment-group
+                                                                           (map (fn [[id _ h]]
+                                                                                  {:db/id [:comment/id id]
+                                                                                   :comment/body [:markdown/hash (str h id)]
+                                                                                   :comment/loaded true})))}])]
+              (<! (timeout (+ 50 (* 5 (count new-comments)))))
+              (recur [comment-groups updated-transactions tl-comment-sizes]))
+            (re-frame/dispatch [:datascript-transact
+                                (conj
+                                 transactions
+                                 {:datoms (map (fn [[id size]]
+                                                 {:db/id [:comment/id id]
+                                                  :comment/size size}) tl-comment-sizes-before)})])))))
+    {:datascript-transact
      {:transactions [{:datoms datoms}
                      {:datoms [{:db/id [:thread/id thread-id]
                                 :thread/mores (concat mores new-mores)}]}
                      {:datoms [(->> datoms
-                                    (#(do (-> %
-                                              (filter (fn [x] (nil? (:comment/parent x))))
-                                              (map println))
-                                          %))
                                     (remove #(nil? (:comment/parent %)))
                                     (map #(if (= (str "t3_" thread-id)
                                                  (:comment/parent %))
@@ -448,6 +612,7 @@
                                             {:db/id [:comment/id (subs (:comment/parent %) 3)]
                                              :comment/children [:comment/id (:comment/id %)]})))]}]
       :async false}}))
+
 
 (reg-event-fx
  :root-reddit-poll-res
@@ -462,6 +627,13 @@
  (fn [[_ thread-id _]] [:thread/id thread-id])
  (fn [{{:keys [thread/mores]} :datascript} [_ thread-id res]]
    (process-comments mores thread-id res [:json :data :things])))
+
+(reg-event-fx
+ :datascript-transact
+ (fn [_ [_ transactions]]
+   {:dispatch-later [{:ms 100 :dispatch [:poll-reddit :loop]}
+                     {:ms 0 :dispatch [:prepare-select-for-render]}]
+    :datascript-transact {:transactions transactions}}))
 
 (reg-event-fx
  :reddit-auth-error
@@ -519,3 +691,10 @@
                                           :datoms [{:auth/flow :complete
                                                     :auth/current-user [:user/name name]
                                                     :auth/users [:user/name name]}]}]}}))
+
+(reg-event-fx
+ :switch-account
+ (fn [_ [_ id]]
+   {:datascript-transact {:transactions [{:path [0 :root/auth]
+                                          :datoms [{:auth/current-user id}]}]}}))
+

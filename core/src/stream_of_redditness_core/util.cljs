@@ -1,5 +1,7 @@
 (ns stream-of-redditness-core.util
+  (:require-macros [cljs.core.async.macros :refer [go]])
   (:require [stream-of-redditness-core.db :as db]
+            [cljs.core.async :refer [put! chan <! >! timeout close!]]
             [datascript.core :as d]))
 
 (defn merge-with-key
@@ -51,22 +53,22 @@
   (deep-merge-rec (merge source changes) nil source changes))
 
 (defn comment-to-datoms
-  [l {:keys [kind data]}]
+  [c l {:keys [kind data]}]
   (if (= "more" kind)
     (-> (reduce conj l (map #(assoc data :kind :more :children %) (partition-all 20 (:children data))))
-        ;;(conj (assoc data :kind :more))
         (conj {:db/id (db/tempid)
-               :comment/id (:id data)
-               :comment/loaded false}))
+               :comment/id (:id data)}))
     (let [{:keys [id score author body created_utc replies parent_id]} data]
+      (go (>! c [id body (.md5 js/window body)]))
       (conj
-       (reduce comment-to-datoms l (get-in replies [:data :children]))
+       (reduce (partial comment-to-datoms c)
+               l
+               (get-in replies [:data :children]))
        {:db/id (db/tempid)
         :comment/id id
-        :comment/loaded true
         :comment/score score
         :comment/author author
-        :comment/body body
+        :comment/body-raw body ;; (js->clj (.parse (.-markdown js/window) body))
         :comment/created created_utc
         :comment/parent parent_id
         :comment/children (->> replies
@@ -74,3 +76,51 @@
                                :children
                                (map #(get-in % [:data :id]))
                                (map #(-> [:comment/id %])))}))))
+
+(defn go-apply
+  [f & args]
+  (let [c (chan)]
+    (apply f (conj args c))
+    c))
+
+(defn go-list-op
+  [reducer i l wait]
+  (let [c (chan)]
+    (go (let [c-first (chan)
+              _ (go (>! c-first i))
+              c-last (reduce (fn [c-read v]
+                               (let [c-write (chan)]
+                                 (go (let [acc (<! c-read)]
+                                       (<! (timeout wait))
+                                       (reducer c-write acc v)))
+                                 c-write))
+                             c-first
+                             l)
+              res (<! c-last)]
+          (>! c res)))
+    c))
+
+(defn go-reduce
+  ([f i l] (go-reduce f i l 0))
+  ([f i l wait]
+   (go-list-op #(go (>! %1 (<! (go-apply f %2 %3))))
+               i
+               l
+               wait)))
+
+(defn go-some
+  ([p l] (go-some p l 0))
+  ([p l wait]
+   (go-list-op #(go (>! %1 (if %2 %2 (or (<! (go-apply p %3))))))
+               false
+               l
+               wait)))
+
+(defn go-filter
+  ([p l] (go-filter p l 0))
+  ([p l wait]
+   (go-list-op #(go (let [use? (<! (go-apply p %3))]
+                      (>! %1 (if use? (conj %2 %3) %2))))
+               []
+               l
+               wait)))

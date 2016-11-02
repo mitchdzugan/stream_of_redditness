@@ -14,33 +14,54 @@ var rooms = {};
 
 wss.on('connection', function (ws) {
     var guid = Guid.raw();
-    clients[guid] = ws;
+    clients[guid] = {
+        ws: ws,
+        rooms: {}
+    };
     console.log("Connection from: " + guid);
     ws.on('message', function (inputStr) {
         var input = JSON.parse(inputStr);
-        if(input.inst == 'join') {
+        if (input.inst == 'join') {
+            clients[guid].rooms[input.thread] = true;
 
             var room = rooms[input.thread];
 
             if (!room) {
-                room = [];
+                room = {};
                 rooms[input.thread] = room;
             }
 
-            clients[guid].send(JSON.stringify({type: "thread-members-on-join",
-                                               thread: input.thread,
-                                               members: room}));
+            clients[guid].ws.send(JSON.stringify({type: "thread-members-all",
+                                                  thread: input.thread,
+                                                  members: Object.keys(room)}));
 
-            for (var member in rooms) {
-                clients[member].send(JSON.stringify({type: "thread-new-member",
-                                                     thread: input.thread,
-                                                     member: guid}));
+            for (var member in Object.keys(room)) {
+                clients[member].ws.send(JSON.stringify({type: "thread-members-join",
+                                                        thread: input.thread,
+                                                        member: guid}));
             }
 
-            room.push(guid);
+            room[guid] = true;
 
-        } else if(input.inst == 'send') {
-            clientMap[input.peerId].send(JSON.stringify(input.message));
+        } else if (input.inst == 'leave') {
+            if (rooms[input.thread]) {
+                delete clients[guid].rooms[input.thread];
+                delete rooms[input.thread][guid];
+                for (var member in Object.keys(rooms[input.thread])) {
+                    clients[member].ws.send(JSON.stringify({type: "thread-members-leave",
+                                                            thread: input.thread,
+                                                            member: guid}));
+                }
+            }
+        } else if (input.inst == 'send') {
+            clients[input.peerId].ws.send(JSON.stringify(input.message));
+        } else if (input.inst == 'top-threads') {
+            var sizeOfRoom = function(thread) {return Object.keys(rooms[thread]).length;};
+            var topRooms = Object.keys(rooms)
+                .sort(function(t1, t2) {return sizeOfRoom(t1) - sizeOfRoom(t2);})
+                .slice(0, 20);
+            clients[guid].ws.send(JSON.stringify({type: "top-rooms",
+                                                  topRooms: topRooms}));
         }
     });
 });

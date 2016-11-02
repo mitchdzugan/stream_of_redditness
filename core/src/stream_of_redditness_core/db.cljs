@@ -1,6 +1,5 @@
 (ns stream-of-redditness-core.db
-  (:require
-   [datascript.core :as d]
+  (:require [datascript.core :as d]
             [posh.reagent :as posh]
             [stream-of-redditness-core.routes :as routes]
             [cemerick.url :as url]
@@ -10,7 +9,8 @@
 
 (defn make-schema
   [schema]
-  (->> (concat (map #(-> [% {:db/unique :db.unique/identity}]) (:ident schema))
+  (->> (concat (map #(-> [% {:db/unique :db.unique/identity
+                             :db/index true}]) (:ident schema))
                (map #(-> [% {:db/valueType :db.type/ref
                              :db/isComponent true}]) (:single-ref schema))
                (map #(-> [% {:db/valueType :db.type/ref
@@ -20,12 +20,14 @@
 
 (def schema (make-schema {:ident      [:user/name
                                        :comment/id
-                                       :thread/id]
+                                       :thread/id
+                                       :markdown/hash]
                           :single-ref [:root/auth
                                        :auth/current-user
                                        :root/polling
                                        :root/routing
-                                       :root/render]
+                                       :root/render
+                                       :comment/body]
                           :many-ref   [:auth/users
                                        :polling/threads
                                        :thread/top-level-comments

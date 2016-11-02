@@ -4,6 +4,9 @@
               [stream-of-redditness-core.events]
               [stream-of-redditness.views :as views]
               [stream-of-redditness.config :as config]
+              [markdown.js]
+              [moment.js]
+              [md5.js]
               [devtools.core :as devtools]))
 
 (defn dev-setup []

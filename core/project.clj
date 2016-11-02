@@ -9,7 +9,8 @@
                  [datascript "0.15.0"]
                  [org.clojure/core.match "0.3.0-alpha4"]
                  [posh "0.5.4"]
-                 [dat-harmony "0.1.3-SNAPSHOT"]]
+                 [dat-harmony "0.1.3-SNAPSHOT"]
+                 [thi.ng/color "1.2.0"]]
 
   :plugins [[lein-cljsbuild "1.1.4"]
             [lein-garden "0.2.8"]]
@@ -24,6 +25,4 @@
 
     :plugins      [[lein-figwheel "0.5.7"]
                    [lein-doo "0.1.7"]
-                   [cider/cider-nrepl "0.13.0"]]
-    }}
-  )
+                   [cider/cider-nrepl "0.13.0"]]}})

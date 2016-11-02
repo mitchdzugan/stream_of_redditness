@@ -75,6 +75,13 @@
      :compiler     {:main            stream-of-redditness.chrome-ext
                     :output-to       "chrome-ext/js/compiled/ext.js"
                     :output-dir      "chrome-ext/js/compiled/out"
+                    :externs ["externs/externs.js"]
+                    :foreign-libs [{:file "https://cdnjs.cloudflare.com/ajax/libs/markdown.js/0.5.0/markdown.min.js"
+                                    :provides ["markdown.js"]}
+                                   {:file "https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.15.2/moment.min.js"
+                                    :provides ["moment.js"]}
+                                   {:file "http://www.myersdaily.org/joseph/javascript/md5.js"
+                                    :provides ["md5.js"]}]
                     :optimizations   :whitespace
                     :closure-output-charset "US-ASCII"
                     :pretty-print    true}}

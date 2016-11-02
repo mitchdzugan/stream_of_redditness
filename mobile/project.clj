@@ -5,6 +5,9 @@
                       :url  "http://www.eclipse.org/legal/epl-v10.html"}
             :dependencies [[org.clojure/clojure "1.9.0-alpha10"]
                            [org.clojure/clojurescript "1.9.198"]
+                           [stream-of-redditness-core "0.1.0-SNAPSHOT"]
+                           [re-frame "0.8.0"]
+                           [posh "0.5.4"]
                            [reagent "0.6.0" :exclusions [cljsjs/react cljsjs/react-dom cljsjs/react-dom-server]]
 [re-frame "0.8.0"]]
             :plugins [[lein-cljsbuild "1.1.1"]
