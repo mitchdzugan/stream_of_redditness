@@ -200,6 +200,13 @@
       ((complement p) x1) nil
       :else (recur xs))))
 
+(defn print-ret-with
+  [f v]
+  (println (f v))
+  v)
+
+(def print-ret (partial print-ret-with identity))
+
 (defn get-extreme-id
   [chars-per-pixel target-amount-off-screen get-furthest-off-screen rendered-comments all-comments]
   (let [first-rendered-id (-> rendered-comments first :db/id)
@@ -208,7 +215,7 @@
                              chars-per-pixel)]
     (if (> target-delta-size 0)
       (->> all-comments
-           (drop-while #(not= first-rendered-id (:db/id %)))
+           (take-while #(not= first-rendered-id (:db/id %)))
            reverse
            (reduce (fn [{:keys [target-id size-acc]} {:keys [db/id comment/size]}]
                         (let [curr-size (+ size-acc size)]
@@ -245,76 +252,31 @@
                                          (- scroll-top)
                                          (max 0)
                                          (* chars-per-pixel))
-               skip-size (* display-height -5)
-               first-id (get-extreme-id chars-per-pixel
+               skip-size (* display-height 5)
+               first-id (:db/id (first all-comments)) #_(get-extreme-id chars-per-pixel
                                         skip-size
-                                        #(if-using (.getElementById js/document (str %))
-                                                   (fn [el] (-> el .getBoundingClientRect .-top)))
+                                        #(* -1 (if-using (.getElementById js/document (str %))
+                                                         (fn [el] (-> el .getBoundingClientRect .-top))))
                                         last-rendered
                                         all-comments)
                last-id (get-extreme-id chars-per-pixel
                                        skip-size
-                                       #(if-using (.getElementById js/document (str %))
-                                                  (fn [el] (-> el .getBoundingClientRect .-bottom)))
+                                       #(- (if-using (.getElementById js/document (str %))
+                                                     (fn [el] (-> el .getBoundingClientRect .-bottom)))
+                                           display-height)
                                        (reverse last-rendered)
                                        (reverse all-comments))
-               {:keys [last-skippable-id top-last]} (reduce (fn [{:keys [done] :as acc} {:keys [db/id]}]
-                                                              (if-not done
-                                                                (let [top (if-using (.getElementById js/document (str id))
-                                                                                    #(-> % .getBoundingClientRect .-bottom))]
-                                                                  (if top
-                                                                    (let [done (> top skip-size)]
-                                                                      (println {:top top :skip-size skip-size})
-                                                                      (if done
-                                                                        (merge acc {:done true})
-                                                                        (merge acc {:last-skippable-id id
-                                                                                    :top-last top})))
-                                                                    acc))
-                                                                acc))
-                                                            {}
-                                                            last-rendered)
-               top-empty-space (if top-last
-                                 (- top-last (->> "el-comments-container"
-                                                  (.getElementById js/document)
-                                                  .getBoundingClientRect
-                                                  .-top))
-                                 0)
-               target-char-count (->> display-height
-                                      (* 5)
-                                      (+ scroll-top)
-                                      (* chars-per-pixel))
-               {:keys [id
-                       char-count comments]} (reduce (fn [{:keys [char-count seen-last comments seen-last-skippable] :as acc}
-                                                          {:keys [db/id comment/size] :as comment}]
-                                                       {:seen-last (or seen-last (not last-id) (= last-id id))
-                                                        :seen-last-skippable (or seen-last-skippable (= last-skippable-id id))
-                                                        :char-count (if (and (< char-count target-char-count)
-                                                                             seen-last-skippable)
-                                                                      (+ char-count size)
-                                                                      char-count)
-                                                        :id (if (and seen-last
-                                                                     (>= char-count target-char-count))
-                                                              (:id acc)
-                                                              id)
-                                                        :comments (if (and (or (not seen-last)
-                                                                               (< char-count target-char-count))
-                                                                           seen-last-skippable)
-                                                                    (cons comment comments)
-                                                                    comments)})
-                                                     {:char-count 0
-                                                      :skipped-char-count 0
-                                                      :comments (lazy-seq nil)
-                                                      :seen-last-skippable (not last-skippable-id)}
-                                                     all-comments)]
-           (println [(count comments) top-empty-space])
-           {:char-count char-count
-            :comments (reverse comments)
-            :last-id id
-            :top-empty-space top-empty-space}) ;;(int (/ skipped-char-count chars-per-pixel))})
+               comments (->> all-comments
+                             (drop-while #(not= (:db/id %) first-id))
+                             reverse
+                             (drop-while #(not= (:db/id %) last-id))
+                             reverse)]
+           (println (count comments))
+           {:char-count (reduce #(+ %1 (:comment/size %2)) 0 comments)
+            :comments comments})
          (let [comments (->> all-comments (take 20))]
            {:comments comments
-            :char-count (reduce #(+ %1 (:comment/size %2)) 0 comments)
-            :top-empty-space 0}))]))))
+            :char-count (reduce #(+ %1 (:comment/size %2)) 0 comments)}))]))))
 
 
 (re-frame/reg-cofx
@@ -502,9 +464,7 @@
    {:datascript-transact {:transactions [{:path [0 :root/render]
                                           :datoms [{:render/scroll-requested-in-progress? false
                                                     :render/last-char-count char-count
-                                                    :render/comments comments
-                                                    :render/top-empty-space top-empty-space
-                                                    :render/last-id (or last-id false)}]}]}}))
+                                                    :render/comments comments}]}]}}))
 
 (reg-event-fx
  :prepare-select-for-render

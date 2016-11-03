@@ -76,7 +76,7 @@
                           :children [[box
                                       :size "none"
                                       :align-self :center
-                                      :child [:span.badge (str (:comment/id x))]]
+                                      :child [:span.badge (str id)]]
                                      [box
                                       :size "1"
                                       :child [v-box
@@ -95,12 +95,11 @@
 
 (defn comment-stream
   []
-  (let [{{:keys [render/comments render/top-empty-space]} :root/render :as all}
-        @(p/pull db/conn '[{:root/render [:render/comments :render/top-empty-space]}] 0)]
+  (let [{{:keys [render/comments]} :root/render :as all}
+        @(p/pull db/conn '[{:root/render [:render/comments]}] 0)]
     [v-box
      :attr {:id :el-comments-container}
-     :children [[:div {:style {:height top-empty-space}}]
-                [:ul#el-comment-root.list-group
+     :children [[:ul#el-comment-root.list-group
                  (for [comment comments]
                    ^{:key (:db/id comment)} [comment-view (:db/id comment)])]]]))
 
