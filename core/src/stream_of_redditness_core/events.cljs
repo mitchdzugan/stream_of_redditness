@@ -253,7 +253,7 @@
                                          (max 0)
                                          (* chars-per-pixel))
                skip-size (* display-height 5)
-               first-id (:db/id (first all-comments)) #_(get-extreme-id chars-per-pixel
+               first-id (get-extreme-id chars-per-pixel
                                         skip-size
                                         #(* -1 (if-using (.getElementById js/document (str %))
                                                          (fn [el] (-> el .getBoundingClientRect .-top))))

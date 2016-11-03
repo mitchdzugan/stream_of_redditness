@@ -95,13 +95,46 @@
 
 (defn comment-stream
   []
-  (let [{{:keys [render/comments]} :root/render :as all}
-        @(p/pull db/conn '[{:root/render [:render/comments]}] 0)]
-    [v-box
-     :attr {:id :el-comments-container}
-     :children [[:ul#el-comment-root.list-group
-                 (for [comment comments]
-                   ^{:key (:db/id comment)} [comment-view (:db/id comment)])]]]))
+  (let [scroll-pos (atom nil)
+        comments-atom (atom [])]
+    (reagent/create-class
+     {:component-will-update (fn []
+                               (let [scroll-top (.. js/document -body -scrollTop)
+                                     first-on-screen-id (->> @comments-atom
+                                                             (drop-while #(< (->> %
+                                                                                  :db/id
+                                                                                  str
+                                                                                  (.getElementById js/document)
+                                                                                  .-offsetTop)
+                                                                             scroll-top))
+                                                             first
+                                                             :db/id)]
+                                 (if first-on-screen-id
+                                   (reset! scroll-pos
+                                           {:id first-on-screen-id
+                                            :offset (- scroll-top (->> first-on-screen-id
+                                                                       str
+                                                                       (.getElementById js/document)
+                                                                       .-offsetTop))}))))
+      :component-did-update (fn []
+                              (if @scroll-pos
+                                (set! (.. js/document -body -scrollTop)
+                                      (let [{:keys [id offset]} @scroll-pos]
+                                        (->> id
+                                             str
+                                             (.getElementById js/document)
+                                             .-offsetTop
+                                             (+ offset))))))
+      :reagent-render (fn []
+                        (let [scroll-pos (atom nil)
+                              {{:keys [render/comments]} :root/render :as all}
+                              @(p/pull db/conn [{:root/render [:render/comments]}] 0)]
+                          (reset! comments-atom comments)
+                          [v-box
+                           :attr {:id :el-comments-container}
+                           :children [[:ul#el-comment-root.list-group
+                                       (for [comment comments]
+                                         ^{:key (:db/id comment)} [comment-view (:db/id comment)])]]]))})))
 
 (defn main-panel []
   (fn []
