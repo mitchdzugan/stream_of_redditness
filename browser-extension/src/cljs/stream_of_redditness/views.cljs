@@ -96,10 +96,13 @@
 (defn comment-stream
   []
   (let [scroll-pos (atom nil)
-        comments-atom (atom [])]
+        comments-atom (atom [])
+        comments-cont-top (atom 500)]
     (reagent/create-class
      {:component-will-update (fn []
-                               (let [scroll-top (.. js/document -body -scrollTop)
+                               (let [scroll-top (->> "el-comments-container"
+                                                     (.getElementById js/document)
+                                                     .-scrollTop)
                                      first-on-screen-id (->> @comments-atom
                                                              (drop-while #(< (->> %
                                                                                   :db/id
@@ -115,10 +118,15 @@
                                             :offset (- scroll-top (->> first-on-screen-id
                                                                        str
                                                                        (.getElementById js/document)
-                                                                       .-offsetTop))}))))
+                                                                       .-offsetTop))})))
+                               (reset! comments-cont-top
+                                       (->> "el-comments-container"
+                                            (.getElementById js/document)
+                                            .-offsetTop)))
       :component-did-update (fn []
+                              (reset! db/rendered-change? true)
                               (if @scroll-pos
-                                (set! (.. js/document -body -scrollTop)
+                                (set! (->> "el-comments-container" (.getElementById js/document) .-scrollTop)
                                       (let [{:keys [id offset]} @scroll-pos]
                                         (->> id
                                              str
@@ -131,7 +139,12 @@
                               @(p/pull db/conn [{:root/render [:render/comments]}] 0)]
                           (reset! comments-atom comments)
                           [v-box
-                           :attr {:id :el-comments-container}
+                           :attr {:id :el-comments-container
+                                  :on-scroll #(re-frame/dispatch [:on-scroll])}
+                           :style {:overflow-y "scroll"
+                                   :height (str (- (.. js/document -body -clientHeight)
+                                                   @comments-cont-top)
+                                                "px")}
                            :children [[:ul#el-comment-root.list-group
                                        (for [comment comments]
                                          ^{:key (:db/id comment)} [comment-view (:db/id comment)])]]]))})))

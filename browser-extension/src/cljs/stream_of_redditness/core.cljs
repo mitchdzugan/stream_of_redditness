@@ -23,5 +23,5 @@
   (enable-console-print!)
   (dev-setup)
   (re-frame/dispatch-sync [:initialize-db])
-  (set! (.-onscroll js/window) #(re-frame/dispatch [:on-scroll]))
+  (set! (.-onresize js/window) #(re-frame/dispatch [:on-scroll]))
   (mount-root))

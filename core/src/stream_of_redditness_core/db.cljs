@@ -33,6 +33,8 @@
                                        :thread/top-level-comments
                                        :comment/children]}))
 
+(def rendered-change? (atom true))
+
 (def conn (d/create-conn schema))
 
 (posh/posh! conn)

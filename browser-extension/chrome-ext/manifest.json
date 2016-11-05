@@ -7,7 +7,7 @@
   "content_scripts": [
     {
       "matches": ["*://*.reddit.com/r/StreamReddit/*"],
-      "js": ["js/compiled/ext.js"]
+      "js": ["./ext.js"]
     }
   ]
 }

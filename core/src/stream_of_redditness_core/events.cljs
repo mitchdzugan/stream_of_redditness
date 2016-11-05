@@ -34,17 +34,21 @@
    (let [app (.getElementById js/document "app")])
    (assoc coeffects :heights {:display-height (.-innerHeight js/window)
                               :rendered-height (-> js/document
-                                                   (.getElementById "el-comment-root")
+                                                   (.getElementById "el-comments-container")
                                                    (#(if %
-                                                        (.-clientHeight %)
-                                                        0)))
+                                                        (.-scrollHeight %)
+                                                        0))
+                                                   )
                               :page-height (-> js/document
-                                               (.getElementById "app")
-                                               .-clientHeight)
+                                               (.getElementById "el-comments-container")
+                                               (#(if %
+                                                   (.-clientHeight %)
+                                                   0)))
                               :scroll-top (-> js/document
-                                              (.getElementsByTagName "body")
-                                              (.item 0)
-                                              .-scrollTop)})))
+                                              (.getElementById "el-comments-container")
+                                              (#(if %
+                                                  (.-scrollTop %)
+                                                  0)))})))
 (defn handle-transactions
   [{:keys [transactions dont-save async]}]
   (letfn [(create-datoms-at
@@ -193,12 +197,19 @@
 
 (defn last-that-satisfies
   [p l]
-  (loop [[x1 & [x2 & _ :as xs]] l]
-    (cond
-      (and (p x1) (nil? xs)) x1
-      (and (p x1) ((complement p) x2)) x1
-      ((complement p) x1) nil
-      :else (recur xs))))
+  (loop [[[x1 & [x2 & _ :as xs]] store] [l {}]]
+    (let [store (merge store
+                       {x1 (or (get store x1) (if (p x1) :yes :no))}
+                       (if x2
+                         {x2 (or (get store x2) (if (p x2) :yes :no))}
+                         {}))
+          px1 (= :yes (get store x1))
+          px2 (= :yes (get store x2))]
+      (cond
+        (and px1 (nil? xs)) x1
+        (and px1 (not px2)) x1
+        (not px1) nil
+        :else (recur [xs store])))))
 
 (defn print-ret-with
   [f v]
@@ -218,19 +229,18 @@
            (take-while #(not= first-rendered-id (:db/id %)))
            reverse
            (reduce (fn [{:keys [target-id size-acc]} {:keys [db/id comment/size]}]
-                        (let [curr-size (+ size-acc size)]
-                          {:target-id (if (and (not target-id)
-                                               (> curr-size target-delta-size))
-                                        id
-                                        target-id)
-                           :size-acc curr-size}))
+                     (let [curr-size (+ size-acc size)]
+                       {:target-id (if (and (not target-id)
+                                            (> curr-size target-delta-size))
+                                     id
+                                     target-id)
+                        :size-acc curr-size}))
                    {:size-acc 0})
            :target-id
            (#(or % (-> all-comments first :db/id))))
       (:db/id (or
                (last-that-satisfies #(> (get-furthest-off-screen (:db/id %)) target-amount-off-screen) (drop 3 rendered-comments))
                (first rendered-comments))))))
-
 
 (re-frame/reg-fx
  :calculate-for-render
@@ -243,40 +253,54 @@
                            (mapcat :thread/top-level-comments)
                            (filter :comment/loaded)
                            (sort-by #(* -1 (:comment/created %))))]
-     (re-frame/dispatch
-      [:commit-for-render
-       (if (> last-char-count 0)
-         (let [chars-per-pixel (/ last-char-count rendered-height)
-               skippable-char-count (->> display-height
-                                         (* 5)
-                                         (- scroll-top)
-                                         (max 0)
-                                         (* chars-per-pixel))
-               skip-size (* display-height 5)
-               first-id (get-extreme-id chars-per-pixel
-                                        skip-size
-                                        #(* -1 (if-using (.getElementById js/document (str %))
-                                                         (fn [el] (-> el .getBoundingClientRect .-top))))
-                                        last-rendered
-                                        all-comments)
-               last-id (get-extreme-id chars-per-pixel
-                                       skip-size
-                                       #(- (if-using (.getElementById js/document (str %))
-                                                     (fn [el] (-> el .getBoundingClientRect .-bottom)))
-                                           display-height)
-                                       (reverse last-rendered)
-                                       (reverse all-comments))
-               comments (->> all-comments
-                             (drop-while #(not= (:db/id %) first-id))
-                             reverse
-                             (drop-while #(not= (:db/id %) last-id))
-                             reverse)]
-           (println (count comments))
-           {:char-count (reduce #(+ %1 (:comment/size %2)) 0 comments)
-            :comments comments})
-         (let [comments (->> all-comments (take 20))]
-           {:comments comments
-            :char-count (reduce #(+ %1 (:comment/size %2)) 0 comments)}))]))))
+     (if @db/rendered-change?
+       (do (reset! db/rendered-change? false)
+           (re-frame/dispatch
+            [:commit-for-render
+             (if (> last-char-count 0)
+               (let [comments-top (->> "el-comments-container"
+                                       (.getElementById js/document)
+                                       .-offsetTop)
+                     chars-per-pixel (/ last-char-count rendered-height)
+                     base-target (* display-height 4)
+                     adjust-threshold (* display-height 2)
+                     distance-calc-top #(- comments-top
+                                           (if-using (.getElementById js/document (str %))
+                                                     (fn [el] (-> el .getBoundingClientRect .-top))))
+                     distance-calc-bottom #(- (if-using (.getElementById js/document (str %))
+                                                        (fn [el] (-> el .getBoundingClientRect .-bottom)))
+                                              (+ display-height comments-top))
+                     prev-first-id (-> last-rendered first :db/id)
+                     prev-last-id (-> last-rendered last :db/id)
+                     should-adjust? (or (< (distance-calc-top prev-first-id) adjust-threshold)
+                                        (< (distance-calc-bottom prev-last-id) adjust-threshold))
+                     first-id (if should-adjust?
+                                (get-extreme-id chars-per-pixel
+                                                base-target
+                                                distance-calc-top
+                                                last-rendered
+                                                all-comments)
+                                prev-first-id)
+                     last-id (if should-adjust?
+                               (get-extreme-id chars-per-pixel
+                                               base-target
+                                               distance-calc-bottom
+                                               (reverse last-rendered)
+                                               (reverse all-comments))
+                               prev-last-id)
+                     comments (->> all-comments
+                                   (drop-while #(not= (:db/id %) first-id))
+                                   reverse
+                                   (drop-while #(not= (:db/id %) last-id))
+                                   reverse)]
+                 (println [(/ last-char-count rendered-height) prev-first-id first-id prev-last-id last-id (count comments)])
+                 (if (= last-rendered comments)
+                   (reset! db/rendered-change? true))
+                 {:char-count (reduce #(+ %1 (:comment/size %2)) 0 comments)
+                  :comments comments})
+               (let [comments (->> all-comments (take 20))]
+                 {:comments comments
+                  :char-count (reduce #(+ %1 (:comment/size %2)) 0 comments)}))]))))))
 
 
 (re-frame/reg-cofx
@@ -400,17 +424,7 @@
                                (+ scroll-top)
                                (/ 2)
                                (/ page-height))]
-     (cond
-       (and (> scroll-percentage 0.66) (not scroll-requested-in-progress?))
-       {:dispatch [:prepare-select-for-render]
-        :datascript-transact {:transactions [{:path [0 :root/render]
-                                              :datoms [{:render/scroll-requested-in-progress? true}]}]}}
-       (and (< scroll-percentage 0.33) (not scroll-requested-in-progress?))
-       {:dispatch [:prepare-select-for-render]
-        :datascript-transact {:transactions [{:path [0 :root/render]
-                                              :datoms [{:render/scroll-requested-in-progress? true
-                                                        :render/last-id false}]}]}}
-       :else {}))))
+     {:dispatch [:prepare-select-for-render]})))
 
 (reg-event-fx
  :reddit-api-request
