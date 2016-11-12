@@ -4,6 +4,8 @@
             [stream-of-redditness-core.routes :as routes]
             [cemerick.url :as url]
             [clojure.walk :as walk]
+            [re-frame.core :as re-frame]
+            [reagent.core :as reagent]
             [clojure.spec :as s]
             [clojure.string :as string]))
 
@@ -21,19 +23,23 @@
 (def schema (make-schema {:ident      [:user/name
                                        :comment/id
                                        :thread/id
-                                       :markdown/hash]
+                                       :markdown/hash
+                                       :peer/glob-id]
                           :single-ref [:root/auth
                                        :auth/current-user
                                        :root/polling
                                        :root/routing
                                        :root/render
-                                       :comment/body]
-                          :many-ref   [:auth/users
+                                       :comment/markdown]
+                          :many-ref   [:thread/peers
+                                       :auth/users
                                        :polling/threads
                                        :thread/top-level-comments
                                        :comment/children]}))
 
-(def rendered-change? (atom true))
+(def rendered-change? (reagent/atom true))
+(def first-id (atom nil))
+(def last-id (atom nil))
 
 (def conn (d/create-conn schema))
 
@@ -46,14 +52,25 @@
     (swap! tempid-ref dec)
     id))
 
+(defn get-in$
+  ([db path] (get-in$ db path 0))
+  ([db path eid]
+   (get-in (d/pull db
+                   (let [reverse-path (reverse path)]
+                     (reduce #(-> [{%2 %1}])
+                             [(first reverse-path)]
+                             (rest reverse-path)))
+                   eid)
+           path)))
+
 (defmulti initial-state-for-route (fn [handler _ _] handler))
 (defmethod initial-state-for-route :auth [_ _ query-params] query-params
   {:datoms [(merge {:db/id 0} (walk/keywordize-keys query-params))]})
 (defmethod initial-state-for-route :stream [_ route-params _]
-  {:path [0 :root/polling :polling/threads]
-   :datoms (as-> (:threads route-params) $
-             (string/split $ "-")
-             (map #(-> {:thread/id %}) $))})
+  (doseq [thread (-> route-params :threads (string/split "-"))]
+    (let [[id color] (string/split thread ":")]
+      (re-frame/dispatch [:add-thread id (or color "000")])))
+  {})
 (defmethod initial-state-for-route :default [_ _ _] {:root/threads []})
 
 (defn init-db

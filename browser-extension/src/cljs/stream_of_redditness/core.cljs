@@ -23,5 +23,5 @@
   (enable-console-print!)
   (dev-setup)
   (re-frame/dispatch-sync [:initialize-db])
-  (set! (.-onresize js/window) #(re-frame/dispatch [:on-scroll]))
+  (set! (.-onresize js/window) #(re-frame/dispatch [:prepare-select-for-render]))
   (mount-root))

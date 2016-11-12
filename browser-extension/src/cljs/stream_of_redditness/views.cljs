@@ -58,12 +58,11 @@
 
 (defn comment-view
   [id]
-  (let [{:keys [comment/body comment/score comment/created
-                comment/author comment/children] :as x}
-        @(p/pull db/conn [{:comment/body [:markdown/parsed]} :comment/score
+  (let [{:keys [comment/markdown comment/score comment/created
+                comment/author comment/children]}
+        @(p/pull db/conn [{:comment/markdown [:markdown/parsed]} :comment/score
                           :comment/created :comment/author :comment/id
-                          {:comment/children [:db/id :comment/id
-                                              :comment/created :comment/loaded]}]
+                          {:comment/children [:db/id :comment/created :comment/loaded]}]
                  id)
         replies (->> children
                      (filter :comment/loaded)
@@ -76,7 +75,7 @@
                           :children [[box
                                       :size "none"
                                       :align-self :center
-                                      :child [:span.badge (str id)]]
+                                      :child [:span.badge (str score)]]
                                      [box
                                       :size "1"
                                       :child [v-box
@@ -85,13 +84,18 @@
                                                                       :justify :between
                                                                       :children [[box :child author]
                                                                                  [box :child (.fromNow (.moment js/window (* 1000 created)))]]]]
-                                                         [box :child (str (:markdown/parsed body))]]]]]]]
+                                                         [box :child (str (:markdown/parsed markdown))]]]]]]]
                  (if (> (count replies) 0)
                    [box
                     :child [:ul.list-group
                             (for [comment replies]
-                              ^{:key (:comment/id comment)}
+                              ^{:key (:db/id comment)}
                               [comment-view (:db/id comment)])]])]]]))
+
+(defn comment-bookend
+  [extreme? side]
+  (if-not extreme?
+    ^{:key (str "more-comments-" side)} [:li.list-group-item [:i.fa.fa-spinner.fa-spin]]))
 
 (defn comment-stream
   []
@@ -125,29 +129,40 @@
                                             .-offsetTop)))
       :component-did-update (fn []
                               (reset! db/rendered-change? true)
-                              (if @scroll-pos
-                                (set! (->> "el-comments-container" (.getElementById js/document) .-scrollTop)
-                                      (let [{:keys [id offset]} @scroll-pos]
-                                        (->> id
-                                             str
-                                             (.getElementById js/document)
-                                             .-offsetTop
-                                             (+ offset))))))
+                              (let [comments-cont (->> "el-comments-container" (.getElementById js/document))]
+                                (if (and @scroll-pos
+                                         (if-let [first-comment (->> @db/first-id (.getElementById js/document))]
+                                           (> (.-scrollTop comments-cont)
+                                              (- (->> first-comment .getBoundingClientRect .-bottom)
+                                                 (.-offsetTop comments-cont)))
+                                           true))
+                                  (set! (.-scrollTop comments-cont)
+                                        (let [{:keys [id offset]} @scroll-pos]
+                                          (->> id
+                                               str
+                                               (.getElementById js/document)
+                                               .-offsetTop
+                                               (+ offset)))))))
       :reagent-render (fn []
                         (let [scroll-pos (atom nil)
-                              {{:keys [render/comments]} :root/render :as all}
+                              {{:keys [render/comments]} :root/render}
                               @(p/pull db/conn [{:root/render [:render/comments]}] 0)]
                           (reset! comments-atom comments)
                           [v-box
                            :attr {:id :el-comments-container
-                                  :on-scroll #(re-frame/dispatch [:on-scroll])}
+                                  :on-scroll #(re-frame/dispatch [:prepare-select-for-render])}
                            :style {:overflow-y "scroll"
                                    :height (str (- (.. js/document -body -clientHeight)
                                                    @comments-cont-top)
                                                 "px")}
                            :children [[:ul#el-comment-root.list-group
-                                       (for [comment comments]
-                                         ^{:key (:db/id comment)} [comment-view (:db/id comment)])]]]))})))
+                                       (-> (for [comment comments]
+                                             ^{:key (:db/id comment)} [comment-view (:db/id comment)])
+                                           (conj (comment-bookend (= @db/first-id (-> comments first :db/id)) "begin"))
+                                           reverse
+                                           (conj (comment-bookend (= @db/last-id (-> comments last :db/id)) "end"))
+                                           reverse
+                                           (#(remove nil? %)))]]]))})))
 
 (defn main-panel []
   (fn []

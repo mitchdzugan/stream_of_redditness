@@ -11,7 +11,12 @@
             [re-frame.core :as re-frame]
             [re-frame.loggers :refer [console]]
             [stream-of-redditness-core.db :as db]
+            [stream-of-redditness-core.webrtc :as webrtc]
             [stream-of-redditness-core.util :as util]))
+
+(defn sim
+  [chance]
+  (< (rand) chance))
 
 (re-frame/reg-cofx
  :datascript
@@ -31,7 +36,6 @@
 (re-frame/reg-cofx
  :heights
  (fn [coeffects _]
-   (let [app (.getElementById js/document "app")])
    (assoc coeffects :heights {:display-height (.-innerHeight js/window)
                               :rendered-height (-> js/document
                                                    (.getElementById "el-comments-container")
@@ -160,11 +164,6 @@
   ([id sel eidf f] (re-frame/reg-event-fx id (interceptors sel eidf) f)))
 
 (re-frame/reg-fx
- :schedule-poll
- (fn [_]
-   (.setTimeout js/window #(re-frame/dispatch [:poll-reddit :poll]) 10000)))
-
-(re-frame/reg-fx
  :listen-storage
  (fn [_]
    (.addEventListener js/window
@@ -176,6 +175,12 @@
                           [:storage-update (-> %
                                                .-newValue
                                                cljs.reader/read-string)])))))
+
+(re-frame/reg-fx
+ :websocket-send
+ (fn [{:keys [ws payload]}]
+   (->> payload clj->js (.stringify js/JSON) (.send ws))))
+
 (defn take-while-+1
   ([pred coll]
    (lazy-seq
@@ -242,65 +247,76 @@
                (last-that-satisfies #(> (get-furthest-off-screen (:db/id %)) target-amount-off-screen) (drop 3 rendered-comments))
                (first rendered-comments))))))
 
+(def calc-queue (atom false))
+
 (re-frame/reg-fx
  :calculate-for-render
- (fn [{:keys [display-height rendered-height scroll-top db]}]
-   (let [{{:keys [render/last-char-count render/last-id] last-rendered :render/comments} :root/render
+ (fn [{:keys [display-height rendered-height scroll-top db queue-request?]}]
+   (let [{{:keys [render/last-char-count] last-rendered :render/comments} :root/render
           {:keys [polling/threads]} :root/polling}
-         (d/pull db [{:root/render [:render/last-char-count :render/last-id :render/comments]}
-                     {:root/polling [{:polling/threads [{:thread/top-level-comments [:db/id :comment/created :comment/loaded :comment/size]}]}]}] 0)
+         (d/pull db [{:root/render [:render/last-char-count :render/comments]}
+                     {:root/polling [{:polling/threads [{:thread/top-level-comments [:db/id :comment/created :comment/loaded :comment/size]}
+                                                        :thread/color]}]}] 0)
          all-comments (->> threads
-                           (mapcat :thread/top-level-comments)
-                           (filter :comment/loaded)
+                           (mapcat (fn [thread]
+                                     (->> thread
+                                          :thread/top-level-comments
+                                          (filter :comment/loaded)
+                                          (map #(assoc % :thread/color (:thread/color thread))))))
                            (sort-by #(* -1 (:comment/created %))))]
+     (reset! db/first-id (-> all-comments first :db/id))
+     (reset! db/last-id (-> all-comments last :db/id))
      (if @db/rendered-change?
-       (do (reset! db/rendered-change? false)
-           (re-frame/dispatch
-            [:commit-for-render
-             (if (> last-char-count 0)
-               (let [comments-top (->> "el-comments-container"
-                                       (.getElementById js/document)
-                                       .-offsetTop)
-                     chars-per-pixel (/ last-char-count rendered-height)
-                     base-target (* display-height 4)
-                     adjust-threshold (* display-height 2)
-                     distance-calc-top #(- comments-top
-                                           (if-using (.getElementById js/document (str %))
-                                                     (fn [el] (-> el .getBoundingClientRect .-top))))
-                     distance-calc-bottom #(- (if-using (.getElementById js/document (str %))
-                                                        (fn [el] (-> el .getBoundingClientRect .-bottom)))
-                                              (+ display-height comments-top))
-                     prev-first-id (-> last-rendered first :db/id)
-                     prev-last-id (-> last-rendered last :db/id)
-                     should-adjust? (or (< (distance-calc-top prev-first-id) adjust-threshold)
-                                        (< (distance-calc-bottom prev-last-id) adjust-threshold))
-                     first-id (if should-adjust?
-                                (get-extreme-id chars-per-pixel
-                                                base-target
-                                                distance-calc-top
-                                                last-rendered
-                                                all-comments)
-                                prev-first-id)
-                     last-id (if should-adjust?
-                               (get-extreme-id chars-per-pixel
-                                               base-target
-                                               distance-calc-bottom
-                                               (reverse last-rendered)
-                                               (reverse all-comments))
-                               prev-last-id)
-                     comments (->> all-comments
-                                   (drop-while #(not= (:db/id %) first-id))
-                                   reverse
-                                   (drop-while #(not= (:db/id %) last-id))
-                                   reverse)]
-                 (println [(/ last-char-count rendered-height) prev-first-id first-id prev-last-id last-id (count comments)])
-                 (if (= last-rendered comments)
-                   (reset! db/rendered-change? true))
-                 {:char-count (reduce #(+ %1 (:comment/size %2)) 0 comments)
-                  :comments comments})
-               (let [comments (->> all-comments (take 20))]
-                 {:comments comments
-                  :char-count (reduce #(+ %1 (:comment/size %2)) 0 comments)}))]))))))
+       (re-frame/dispatch
+        [:commit-for-render
+         (if (> last-char-count 0)
+           (let [comments-top (->> "el-comments-container"
+                                   (.getElementById js/document)
+                                   .-offsetTop)
+                 chars-per-pixel (/ last-char-count rendered-height)
+                 base-target (* display-height 4)
+                 adjust-threshold (* display-height 2)
+                 distance-calc-top #(- comments-top
+                                       (if-using (.getElementById js/document (str %))
+                                                 (fn [el] (-> el .getBoundingClientRect .-top))))
+                 distance-calc-bottom #(- (if-using (.getElementById js/document (str %))
+                                                    (fn [el] (-> el .getBoundingClientRect .-bottom)))
+                                          (+ display-height comments-top))
+                 prev-first-id (-> last-rendered first :db/id)
+                 prev-last-id (-> last-rendered last :db/id)
+                 should-adjust? (or (< (distance-calc-top prev-first-id) adjust-threshold)
+                                    (< (distance-calc-bottom prev-last-id) adjust-threshold))
+                 first-id (if should-adjust?
+                            (get-extreme-id chars-per-pixel
+                                            base-target
+                                            distance-calc-top
+                                            last-rendered
+                                            all-comments)
+                            prev-first-id)
+                 last-id (if should-adjust?
+                           (get-extreme-id chars-per-pixel
+                                           base-target
+                                           distance-calc-bottom
+                                           (reverse last-rendered)
+                                           (reverse all-comments))
+                           prev-last-id)
+                 comments (->> all-comments
+                               (drop-while #(not= (:db/id %) first-id))
+                               reverse
+                               (drop-while #(not= (:db/id %) last-id))
+                               reverse)]
+             (if-not (= last-rendered comments)
+               (reset! db/rendered-change? false))
+             {:char-count (reduce #(+ %1 (:comment/size %2)) 0 comments)
+              :comments comments
+              :top-whitespace (->> all-comments
+                                   (take-while #(not= (:db/id %) first-id))
+                                   (reduce #(+ %1 (:comment/size %2)) 0))})
+           (let [comments (->> all-comments (take 20))]
+             {:comments comments
+              :char-count (reduce #(+ %1 (:comment/size %2)) 0 comments)
+              :top-whitespace 0}))])
+       (if-not queue-request? (reset! calc-queue true))))))
 
 
 (re-frame/reg-cofx
@@ -316,7 +332,7 @@
       :ws
       (fn [coeffects _]
         (assoc coeffects :ws ws)))
-     (set! (.-onmessage ws) #(re-frame/dispatch [onmessage %])))))
+     (set! (.-onmessage ws) #(re-frame/dispatch [onmessage (clojure.walk/keywordize-keys (js->clj (.parse js/JSON (.-data %))))])))))
 
 (defmulti initial-dispatch :root/view)
 (defmethod initial-dispatch :auth [_] [:auth-flow-submit-code])
@@ -343,15 +359,133 @@
                 :onmessage :websocket-message}}))
 
 (reg-event-fx
+ :connection-complete
+ (fn [_ [_ thread-id peer-id rtc-data-channel]]
+   {:datascript-transact {:transactions [{:datoms [{:db/id [:peer/glob-id (str thread-id ":" peer-id)]
+                                                    :peer/state :connected
+                                                    :peer/introduced? true
+                                                    :peer/rtc-data-channel rtc-data-channel}]}]}}))
+
+(re-frame/reg-fx
+ :fire-peer-conn-waiter
+ (fn [[thread-id peer-id]]
+   (go (>! (db/get-in$ @db/conn
+                       [:peer/peer-conn-waiter]
+                       [:peer/glob-id (str thread-id ":" peer-id)])
+           true))))
+
+(reg-event-fx
+ :initiating-connection
+ (fn [_ [_ thread-id peer-id rtc-peer-conn]]
+   {:dispatch-later [{:ms 10000 :dispatch [:check-connection thread-id peer-id]}]
+    :fire-peer-conn-waiter [thread-id peer-id]
+    :datascript-transact {:transactions [{:datoms [{:db/id [:peer/glob-id (str thread-id ":" peer-id)]
+                                                    :peer/state :connecting
+                                                    :peer/rtc-peer-conn rtc-peer-conn}]}]}}))
+
+(reg-event-fx
+ :check-connection
+ [:peer/state]
+ (fn [[_ thread-id peer-id]] [:peer/glob-id (str thread-id ":" peer-id)])
+ (fn [{{:keys [peer/state]} :datascript} [_ thread-id peer-id]]
+   (if-not (= :connected state)
+     {:datascript-transact {:transactions [{:datoms [{:db/id [:peer/glob-id (str thread-id ":" peer-id)]
+                                                      :peer/state :failed}]}]}}
+     {})))
+
+(reg-event-fx
+ :rtc-message
+ (fn [_ [_ thread-id peer-id event]]
+   (println [thread-id peer-id (.-data event)])))
+
+(reg-event-fx
+ :connect-peers
+ [{:thread/peers [:peer/state :peer/id :peer/thread :peer/glob-id]}]
+ (fn [[_ thread]] [:thread/id thread])
+ (fn [{{:keys [thread/peers]} :datascript} [_ thread]]
+   {:connect-peers (->> peers
+                        (remove #(= :connecting (:peer/state %)))
+                        (remove #(= :connected (:peer/state %))))}))
+
+(defmulti websocket-handler :type)
+
+(defmethod websocket-handler "your-id" [{:keys [your_id]} ws]
+  (re-frame/reg-fx
+   :connect-peers
+   (fn [peers]
+     (doseq [{:keys [peer/glob-id peer/id peer/thread]} peers]
+       (webrtc/make-connection ws thread your_id id))))
+  {:datascript-transact {:transactions [{:path [0]
+                                         :datoms [{:root/webrtc-id your_id}]}]}})
+
+(defmethod websocket-handler "thread-members-all" [{:keys [thread members]} _]
+  {:dispatch [:connect-peers thread]
+   :datascript-transact {:transactions [{:datoms (concat (map #(-> {:db/id (db/tempid)
+                                                                    :peer/glob-id (str thread ":" %)
+                                                                    :peer/id %
+                                                                    :peer/peer-conn-waiter (chan)
+                                                                    :peer/thread thread}) members)
+                                                         (map #(-> {:db/id [:thread/id thread]
+                                                                    :thread/peers [:peer/glob-id (str thread ":" %)]}) members))}]}})
+
+(defmethod websocket-handler "thread-members-leave" [{:keys [thread member]} _]
+  {:dispatch [:connect-peers thread]
+   :datascript-transact {:transactions [{:datoms [[:db/retract
+                                                   [:thread/id thread]
+                                                   :thread/peers
+                                                   [:peer/glob-id (str thread ":" member)]]]}]}})
+
+(defmethod websocket-handler "thread-members-join" [{:keys [thread member]} _]
+  {:dispatch [:connect-peers thread]
+   :datascript-transact {:transactions [{:datoms [{:db/id (db/tempid)
+                                                   :peer/glob-id (str thread ":" member)
+                                                   :peer/id member
+                                                   :peer/thread thread
+                                                   :peer/peer-conn-waiter (chan)}
+                                                  {:db/id [:thread/id thread]
+                                                   :thread/peers [:peer/glob-id (str thread ":" member)]}]}]}})
+
+(re-frame/reg-fx
+ :process-forwarded-message
+ (fn [[message ws thread-id peer-id]]
+   (let [glob-id [:peer/glob-id (str thread-id ":" peer-id)]
+         peer-conn-waiter (db/get-in$ @db/conn [:peer/peer-conn-waiter] glob-id)]
+     (go (do (<! peer-conn-waiter)
+             (>! peer-conn-waiter true)
+             (webrtc/handle-forward-from-peer message
+                                              ws
+                                              (db/get-in$ @db/conn [:peer/rtc-peer-conn] glob-id)
+                                              thread-id
+                                              peer-id))))))
+
+(defmethod websocket-handler "forward" [{:keys [thread from message]} ws]
+  {:process-forwarded-message [message ws thread from]})
+
+(defmethod websocket-handler :default [v]
+  (console :log v))
+
+(reg-event-fx
  :websocket-message
- (fn [_ _]
-   {}))
+ (fn [{:keys [ws]} [_ message]]
+   (websocket-handler message ws)))
 
 (reg-event-fx
  :initial-route-dispatch
  [:root/view]
  (fn [{:keys [datascript]}]
    {:dispatch (initial-dispatch datascript)}))
+
+(reg-event-fx
+ :add-thread
+ (fn [{:keys [ws]} [_ id color]]
+   {:datascript-transact {:transactions [{:path [0 :root/polling :polling/threads]
+                                          :datoms [{:thread/id id
+                                                    :thread/introduced? false
+                                                    :thread/color color}]}]}
+    :dispatch [:poll-reddit :init]
+    :websocket-send {:ws ws
+                     :payload {:type :join
+                               :thread id}}}))
 
 (reg-event-fx
  :poll-reddit
@@ -372,10 +506,22 @@
                             (empty? (:thread/mores thread-to-poll)))
              [{:keys [children]} mores] (util/pop-when (:thread/mores thread-to-poll) #(not poll-root?))
              api-call (if poll-root?
-                        {:method          :get
-                         :uri             (str "https://www.reddit.com/comments/" (:thread/id thread-to-poll) ".json?sort=new")
-                         :response-format (ajax/json-response-format {:keywords? true})
-                         :on-success      [:root-reddit-poll-res (:thread/id thread-to-poll)]}
+                        (if token
+                          {:method          :get
+                           :uri             (str "https://oauth.reddit.com/comments/" (:thread/id thread-to-poll))
+                           :response-format (ajax/json-response-format {:keywords? true})
+                           :format          :json
+                           :params          {:sort "new"}
+                           :headers         {:authorization (str "bearer " token)
+                                             :content-type "application/json; charset=UTF-8"}
+                           :on-success      [:root-reddit-poll-res (:thread/id thread-to-poll)]
+                           :on-failure      [:poll-reddit :loop]}
+                          {:method          :get
+                           :uri             (str "https://www.reddit.com/comments/" (:thread/id thread-to-poll) ".json?sort=new")
+                           :response-format (ajax/json-response-format {:keywords? true})
+                           :on-success      [:root-reddit-poll-res (:thread/id thread-to-poll)]
+                           :on-failure      [:poll-reddit :loop]}
+                          )
                         {:method          :get
                          :uri             "https://oauth.reddit.com/api/morechildren/"
                          :response-format (ajax/json-response-format {:keywords? true})
@@ -387,6 +533,7 @@
                                            :link_id (str "t3_" (:thread/id thread-to-poll))
                                            :sort "new"}
                          :on-success      [:more-reddit-poll-res (:thread/id thread-to-poll)]
+                         :on-failure      [:poll-reddit :loop]
                          :headers         {:authorization (str "bearer " token)
                                            :content-type "application/json; charset=UTF-8"}
                          })]
@@ -415,18 +562,6 @@
                                             :datoms [{:polling/calls-since-poll 0}]}]}})))
 
 (reg-event-fx
- :on-scroll
- [{:root/render [:render/scroll-requested-in-progress?]}]
- (fn [{{{:keys [render/scroll-requested-in-progress?]} :root/render} :datascript
-       {:keys [display-height scroll-top page-height]} :heights}]
-   (let [scroll-percentage (-> scroll-top
-                               (+ display-height)
-                               (+ scroll-top)
-                               (/ 2)
-                               (/ page-height))]
-     {:dispatch [:prepare-select-for-render]})))
-
-(reg-event-fx
  :reddit-api-request
  [{:root/polling [:polling/calls-since-poll]}]
  (fn [{{{:keys [polling/calls-since-poll] :or {polling/calls-since-poll 0}}
@@ -452,7 +587,7 @@
                   :on-failure      [:refresh-failed on-failure]
                   :headers         {:authorization "Basic LWtvX2lGTVQxVURLT1E6"
                                     :content-type "application/x-www-form-urlencoded"}}]}
-     (if on-failure {:dispatch on-failure} {:dispatch [:poll-reddit :loop]}))))
+     (if on-failure {:dispatch on-failure} {}))))
 
 (reg-event-fx
  :refresh-success
@@ -474,20 +609,26 @@
 
 (reg-event-fx
  :commit-for-render
- (fn [_ [_ {:keys [comments char-count last-id top-empty-space]}]]
-   {:datascript-transact {:transactions [{:path [0 :root/render]
-                                          :datoms [{:render/scroll-requested-in-progress? false
-                                                    :render/last-char-count char-count
-                                                    :render/comments comments}]}]}}))
+ (fn [_ [_ {:keys [comments char-count top-whitespace]}]]
+   (merge (if @calc-queue
+            (do (reset! calc-queue false)
+                {:dispatch [:prepare-select-for-render true]})
+            {})
+          {:datascript-transact {:transactions [{:path [0 :root/render]
+                                                 :datoms [{:render/last-char-count char-count
+                                                           :render/comments comments
+                                                           :render/top-whitespace top-whitespace}]}]}})))
 
 (reg-event-fx
  :prepare-select-for-render
  (fn [{{:keys [scroll-top rendered-height display-height]} :heights
-       db :datascript-db}]
+       db :datascript-db}
+      [_ queue-request?]]
    {:calculate-for-render {:scroll-top scroll-top
                            :rendered-height rendered-height
                            :display-height display-height
-                           :db db}}))
+                           :db db
+                           :queue-request? queue-request?}}))
 
 (defn process-comments
   [mores thread-id res root-path]
@@ -513,8 +654,8 @@
                                       (d/q '[:find ?eid ?size
                                              :in $ [?cid ...]
                                              :where
-                                             [?bid :markdown/size ?size]
-                                             [?eid :comment/body ?bid]
+                                             [?mid :markdown/size ?size]
+                                             [?eid :comment/markdown ?mid]
                                              [?eid :comment/id ?cid]]
                                            @db/conn)
                                       (into {}))
@@ -528,7 +669,7 @@
                                                  @db/conn)
                                             flatten)
                   tl-comment-lookup (->> reverse-comment-tree
-                                         (map #(loop [{:keys [comment/id comment/_children comment/body]} %]
+                                         (map #(loop [{:keys [comment/id comment/_children]} %]
                                                  (if _children
                                                    (recur _children)
                                                    {(:comment/id %) id})))
@@ -537,7 +678,7 @@
                                     (remove (fn [[id _ h]] (contains? results [(str h id)]))))
                   new-parsed (->> new-comments
                                   (map (fn [[id body h]]
-                                         (let [parsed (js->clj (.parse (.-markdown js/window) body))]
+                                         (let [parsed (js->clj (.parse (.-markdown js/window) body "Maruku"))]
                                            {:comment/id id
                                             :markdown/parsed parsed
                                             :markdown/size (count (str parsed))
@@ -563,16 +704,17 @@
                                                              {:datoms (->> comment-group
                                                                            (map (fn [[id _ h]]
                                                                                   {:db/id [:comment/id id]
-                                                                                   :comment/body [:markdown/hash (str h id)]
+                                                                                   :comment/markdown [:markdown/hash (str h id)]
                                                                                    :comment/loaded true})))}])]
               (<! (timeout (+ 50 (* 5 (count new-comments)))))
               (recur [comment-groups updated-transactions tl-comment-sizes]))
-            (re-frame/dispatch [:datascript-transact
+            (re-frame/dispatch [:add-completed-comments
                                 (conj
                                  transactions
                                  {:datoms (map (fn [[id size]]
                                                  {:db/id [:comment/id id]
-                                                  :comment/size size}) tl-comment-sizes-before)})])))))
+                                                  :comment/size size}) tl-comment-sizes-before)})
+                                thread-id])))))
     {:datascript-transact
      {:transactions [{:datoms datoms}
                      {:datoms [{:db/id [:thread/id thread-id]
@@ -602,12 +744,47 @@
  (fn [{{:keys [thread/mores]} :datascript} [_ thread-id res]]
    (process-comments mores thread-id res [:json :data :things])))
 
+(re-frame/reg-fx
+ :share-new-comments
+ (fn [[new-comments thread-id]]
+   (doseq [comment (d/q '[:find (pull ?cid [:comment/id :comment/author
+                                            :comment/created :comment/score
+                                            {:comment/markdown [:markdown/parsed]}])
+                          :in $ [?hash ...]
+                          :where
+                          [?mid :markdown/hash ?hash]
+                          [?cid :comment/markdown ?mid]]
+                        @db/conn
+                        new-comments)]
+     (println (d/pull @db/conn [{:thread/peers [:peer/state :peer/rtc-data-channel]}] [:thread/id thread-id]))
+     (doseq [channel (->>
+                      (d/pull @db/conn [{:thread/peers [:peer/state :peer/rtc-data-channel]}] [:thread/id thread-id])
+                          :thread/peers
+                          (filter #(= :connected (:peer/state %)))
+                          (map :peer/rtc-data-channel))]
+       (.send channel (.stringify js/JSON (clj->js comment)))))))
+
 (reg-event-fx
- :datascript-transact
- (fn [_ [_ transactions]]
-   {:dispatch-later [{:ms 100 :dispatch [:poll-reddit :loop]}
-                     {:ms 0 :dispatch [:prepare-select-for-render]}]
-    :datascript-transact {:transactions transactions}}))
+ :add-completed-comments
+ (fn [_ [_ transactions thread-id]]
+   (let [new-comments
+         (reduce (fn [new-comments transaction]
+                   (let [potential-new-comments (->> transaction
+                                                     :datoms
+                                                     (filter :markdown/hash)
+                                                     (map :markdown/hash))
+                         already-seen-comments (d/q '[:find ?hash
+                                                      :in $ [?hash ...]
+                                                      :where [_ :markdown/hash ?hash]]
+                                                    @db/conn
+                                                    potential-new-comments)]
+                     (concat new-comments (remove #(contains? already-seen-comments [%]) potential-new-comments))))
+                 []
+                 transactions)]
+     {:share-new-comments [new-comments thread-id]
+      :dispatch-later [{:ms 100 :dispatch [:poll-reddit :loop]}
+                       {:ms 0 :dispatch [:prepare-select-for-render]}]
+      :datascript-transact {:transactions transactions}})))
 
 (reg-event-fx
  :reddit-auth-error

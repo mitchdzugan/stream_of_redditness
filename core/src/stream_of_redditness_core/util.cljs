@@ -58,7 +58,8 @@
     (-> (reduce conj l (map #(assoc data :kind :more :children %) (partition-all 20 (:children data))))
         (conj {:db/id (db/tempid)
                :comment/id (:id data)}))
-    (let [{:keys [id score author body created_utc replies parent_id]} data]
+    (let [{:keys [id score author body created_utc replies parent_id gilded edited
+                  author_flair_css_class score_hidden author_flair_text]} data]
       (go (>! c [id body (.md5 js/window body)]))
       (conj
        (reduce (partial comment-to-datoms c)
@@ -68,9 +69,14 @@
         :comment/id id
         :comment/score score
         :comment/author author
-        :comment/body-raw body ;; (js->clj (.parse (.-markdown js/window) body))
+        :comment/body body
         :comment/created created_utc
         :comment/parent parent_id
+        :comment/gilded? (or gilded false)
+        :comment/edited? (or edited false)
+        :comment/author-flair-css-class (or author_flair_css_class "")
+        :comment/score-hidden? (or score_hidden false)
+        :comment/author-flair-text (or author_flair_text "")
         :comment/children (->> replies
                                :data
                                :children

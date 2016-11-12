@@ -17,6 +17,7 @@ document.body.innerHTML = "<div id='app'></div>";
 clearHead();
 addStylesheet("https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.3.5/css/bootstrap.css");
 addStylesheet("https://res.cloudinary.com/mitchdzugan/raw/upload/v1477459061/re-com_rrfpmh.css");
+addStylesheet("https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css");
 
 jref = document.createElement("script");
 jref.setAttribute("type", "text/javascript");

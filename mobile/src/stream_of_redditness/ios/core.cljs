@@ -1,7 +1,7 @@
 (ns stream-of-redditness.ios.core
   (:require [reagent.core :as r :refer [atom]]
             [re-frame.core :refer [dispatch dispatch-sync]]
-            [stream-of-redditness-core.events]))
+            #_[stream-of-redditness-core.events]))
 
 (def ReactNative (js/require "react-native"))
 
