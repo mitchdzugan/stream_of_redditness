@@ -1,7 +1,8 @@
 (ns stream-of-redditness.ios.core
   (:require [reagent.core :as r :refer [atom]]
-            [re-frame.core :refer [dispatch dispatch-sync]]
-            #_[stream-of-redditness-core.events]))
+            [re-frame.core :refer [subscribe dispatch dispatch-sync]]
+            [stream-of-redditness-core.events]
+            [stream-of-redditness.subs]))
 
 (def ReactNative (js/require "react-native"))
 
@@ -17,7 +18,7 @@
       (.alert (.-Alert ReactNative) title))
 
 (defn app-root []
-  (let [greeting (atom "Hello THere")]
+  (let [greeting (subscribe [:get-greeting])]
     (fn []
       [view {:style {:flex-direction "column" :margin 40 :align-items "center"}}
        [text {:style {:font-size 30 :font-weight "100" :margin-bottom 20 :text-align "center"}} @greeting]
@@ -28,5 +29,6 @@
         [text {:style {:color "white" :text-align "center" :font-weight "bold"}} "press me"]]])))
 
 (defn init []
-      (dispatch-sync [:initialize-db])
-      (.registerComponent app-registry "StreamOfRedditness" #(r/reactify-component app-root)))
+  (dispatch-sync [:initialize-db])
+  (println "xD")
+  (.registerComponent app-registry "StreamOfRedditness" #(r/reactify-component app-root)))

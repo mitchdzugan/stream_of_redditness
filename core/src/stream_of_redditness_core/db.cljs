@@ -68,7 +68,9 @@
   {:datoms [(merge {:db/id 0} (walk/keywordize-keys query-params))]})
 (defmethod initial-state-for-route :stream [_ route-params _]
   (doseq [thread (-> route-params :threads (string/split "-"))]
-    (let [[id color] (string/split thread ":")]
+    (println thread)
+    (let [[id color] (string/split thread "_")]
+      (println id color)
       (re-frame/dispatch [:add-thread id (or color "000")])))
   {})
 (defmethod initial-state-for-route :default [_ _ _] {:root/threads []})
@@ -92,3 +94,4 @@
       {:datoms [{:db/id 0
                  :root/view view}]}
       (initial-state-for-route view route-params (:query location))])))
+

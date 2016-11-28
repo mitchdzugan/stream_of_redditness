@@ -6,7 +6,7 @@
               [datascript.core :as d]
               [re-com.core :refer [h-box v-box hyperlink-href box single-dropdown]]))
 
-(defn auth-view
+(defn top-panel
   []
   (fn []
     (let [{{{:keys [db/id user/name]} :auth/current-user users :auth/users} :root/auth}
@@ -35,29 +35,38 @@
                             (re-frame/dispatch [:auth-flow-begin]))
                           (re-frame/dispatch [:switch-account %]))]
       [h-box
-       :children [(if (> (count users) 0)
-                    [single-dropdown
-                     :choices dropdown-choices
-                     :model id
-                     :render-fn render-fn
-                     :on-change on-selection
-                     :placeholder "You are not logged in"]
-                    [h-box
-                     :children ["You are not logged in:"
-                                [hyperlink-href
-                                 :label "Add a reddit account"
-                                 :href (str "https://www.reddit.com/api/v1/authorize"
-                                            "?client_id=" "-ko_iFMT1UDKOQ"
-                                            "&response_type=" "code"
-                                            "&state=" "state"
-                                            "&redirect_uri=" "https://www.reddit.com/r/StreamReddit/auth"
-                                            "&duration=" "permanent"
-                                            "&scope=" "edit read report save submit vote identity")
-                                 :target "_blank"
-                                 :attr {:on-click #(re-frame/dispatch [:auth-flow-begin])}]]])]])))
+       :children [[box
+                   :size "1"
+                   :child
+                   (if (> (count users) 0)
+                     [h-box
+                      :children [[box :child "Logged in as: "]
+                                 [box :size "1"
+                                  :child [single-dropdown
+                                          :choices dropdown-choices
+                                          :model id
+                                          :render-fn render-fn
+                                          :on-change on-selection
+                                          :placeholder "You are not logged in"]]]]
+                     [h-box
+                      :children ["You are not logged in:"
+                                 [hyperlink-href
+                                  :label "Add a reddit account"
+                                  :href (str "https://www.reddit.com/api/v1/authorize"
+                                             "?client_id=" "-ko_iFMT1UDKOQ"
+                                             "&response_type=" "code"
+                                             "&state=" "state"
+                                             "&redirect_uri=" "https://www.reddit.com/r/StreamReddit/auth"
+                                             "&duration=" "permanent"
+                                             "&scope=" "edit read report save submit vote identity")
+                                  :target "_blank"
+                                  :attr {:on-click #(re-frame/dispatch [:auth-flow-begin])}]]])]
+                  [box
+                   :size "1"
+                   :child "add thread"]]])))
 
 (defn comment-view
-  [id]
+  [id color]
   (let [{:keys [comment/markdown comment/score comment/created
                 comment/author comment/children]}
         @(p/pull db/conn [{:comment/markdown [:markdown/parsed]} :comment/score
@@ -69,28 +78,37 @@
                      (sort-by :comment/created)
                      reverse)]
     [:li.list-group-item {:id id}
-     [v-box
+     [h-box
       :children [[box
-                  :child [h-box
+                  :size (if (nil? color) "0px" "100px")
+                  :child [:div {:style {:background-color (str "#" color)
+                                        :height "100%"
+                                        :width "100%"}} ""]]
+                 [box
+                  :size "1"
+                  :child [v-box
+                          :width "100%"
                           :children [[box
-                                      :size "none"
-                                      :align-self :center
-                                      :child [:span.badge (str score)]]
-                                     [box
-                                      :size "1"
-                                      :child [v-box
-                                              :width "100%"
-                                              :children [[box :child [h-box
-                                                                      :justify :between
-                                                                      :children [[box :child author]
-                                                                                 [box :child (.fromNow (.moment js/window (* 1000 created)))]]]]
-                                                         [box :child (str (:markdown/parsed markdown))]]]]]]]
-                 (if (> (count replies) 0)
-                   [box
-                    :child [:ul.list-group
-                            (for [comment replies]
-                              ^{:key (:db/id comment)}
-                              [comment-view (:db/id comment)])]])]]]))
+                                      :child [h-box
+                                              :children [[box
+                                                          :size "none"
+                                                          :align-self :center
+                                                          :child [:span.badge (str score)]]
+                                                         [box
+                                                          :size "1"
+                                                          :child [v-box
+                                                                  :width "100%"
+                                                                  :children [[box :child [h-box
+                                                                                          :justify :between
+                                                                                          :children [[box :child author]
+                                                                                                     [box :child (.fromNow (.moment js/window (* 1000 created)))]]]]
+                                                                             [box :child (str (:markdown/parsed markdown))]]]]]]]
+                                     (if (> (count replies) 0)
+                                       [box
+                                        :child [:ul.list-group
+                                                (for [comment replies]
+                                                  ^{:key (:db/id comment)}
+                                                  [comment-view (:db/id comment) nil])]])]]]]]]))
 
 (defn comment-bookend
   [extreme? side]
@@ -156,8 +174,8 @@
                                                    @comments-cont-top)
                                                 "px")}
                            :children [[:ul#el-comment-root.list-group
-                                       (-> (for [comment comments]
-                                             ^{:key (:db/id comment)} [comment-view (:db/id comment)])
+                                       (-> (for [{:keys [db/id thread/color]} comments]
+                                             ^{:key id} [comment-view id color])
                                            (conj (comment-bookend (= @db/first-id (-> comments first :db/id)) "begin"))
                                            reverse
                                            (conj (comment-bookend (= @db/last-id (-> comments last :db/id)) "end"))
@@ -167,5 +185,5 @@
 (defn main-panel []
   (fn []
     [v-box
-     :children [[box :child [auth-view]]
+     :children [[box :child [top-panel]]
                 [box :child [comment-stream]]]]))

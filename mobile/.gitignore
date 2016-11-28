@@ -49,5 +49,3 @@ target/
 # Figwheel
 #
 figwheel_server.log
-
-.cljs_rhino_repl/
