@@ -1,0 +1,10 @@
+* Stream Of Redditness
+** Reddit distributed comment streaming application
+** Technolgies Used
+*** clojurescript
+*** webrtc for peer2peer communication
+*** https://github.com/tonsky/datascript Immutable in memory database stores all comment information
+*** https://github.com/mpdairy/posh View layer
+*** https://github.com/Day8/re-frame Event layer. This part I'm the least happy with and am currently exploring other options including running my own event managing system https://github.com/mitchdzugan/event-monad
+*** https://github.com/mitchdzugan/dat-harmony My datascript syncing system used for storing and restoring session data from localStorage
+** 
