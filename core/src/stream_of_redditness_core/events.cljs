@@ -154,10 +154,9 @@
 (def interceptors #(-> [(re-frame/inject-cofx :datascript [%1 %2])
                         (re-frame/inject-cofx :datascript-db)
                         (re-frame/inject-cofx :now)
-                        ;;(re-frame/inject-cofx :heights)
+                        (re-frame/inject-cofx :heights)
                         (re-frame/inject-cofx :ws)
-                        (datascript-interceptor false)
-                        ]))
+                        (datascript-interceptor false)]))
 
 (defn reg-event-fx
   ([id f] (reg-event-fx id [] #(-> 0) f))
@@ -352,14 +351,12 @@
 (reg-event-fx
  :initialize-db
  (fn  [_ _]
-   (println "Whoah Nelly xD")
    {:db {}
     :datascript-transact {:transactions (db/init-db)}
     :dispatch [:initial-route-dispatch]
     :listen-storage :no-args-needed
     :websocket {:host "ws://localhost:8000"
-                :onmessage :websocket-message}
-    }))
+                :onmessage :websocket-message}}))
 
 (reg-event-fx
  :connection-complete
